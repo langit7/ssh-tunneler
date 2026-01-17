@@ -1,15 +1,12 @@
-"""
-JSON Storage Service for Tunnel Configurations
-"""
 import json
 import os
 from pathlib import Path
 from typing import List, Optional
+from cryptography.fernet import Fernet
 from models.tunnel import Tunnel
 
-
 class StorageService:
-    """Handles persistence of tunnel configurations to JSON file"""
+    """Handles persistence of tunnel configurations to JSON file with encryption"""
 
     def __init__(self, storage_path: Optional[str] = None):
         if storage_path:
@@ -17,6 +14,48 @@ class StorageService:
         else:
             # Default to tunnels.json in user's app data or current directory
             self.storage_path = Path(__file__).parent.parent / "tunnels.json"
+        
+        self.key_path = self.storage_path.parent / ".secret.key"
+        self._load_or_generate_key()
+
+    def _load_or_generate_key(self):
+        """Load encryption key or generate a new one if missing"""
+        if self.key_path.exists():
+            try:
+                with open(self.key_path, "rb") as key_file:
+                    self.key = key_file.read()
+                    self.cipher_suite = Fernet(self.key)
+            except Exception as e:
+                print(f"Error loading key: {e}. Generating new key (old encrypted data will be lost).")
+                self._generate_key()
+        else:
+            self._generate_key()
+
+    def _generate_key(self):
+        """Generate and save a new encryption key"""
+        self.key = Fernet.generate_key()
+        self.cipher_suite = Fernet(self.key)
+        try:
+            with open(self.key_path, "wb") as key_file:
+                key_file.write(self.key)
+        except Exception as e:
+            print(f"Error saving key file: {e}")
+
+    def _encrypt(self, text: str) -> str:
+        """Encrypt string"""
+        if not text: return ""
+        try:
+            return self.cipher_suite.encrypt(text.encode()).decode()
+        except Exception:
+            return ""
+
+    def _decrypt(self, text: str) -> str:
+        """Decrypt string"""
+        if not text: return ""
+        try:
+            return self.cipher_suite.decrypt(text.encode()).decode()
+        except Exception:
+            return text # Return original if decryption fails (backward compatibility)
 
     def load_tunnels(self) -> List[Tunnel]:
         """Load all tunnel configurations from storage"""
@@ -26,7 +65,18 @@ class StorageService:
         try:
             with open(self.storage_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return [Tunnel.from_dict(t) for t in data.get("tunnels", [])]
+                tunnels = []
+                for t_dict in data.get("tunnels", []):
+                    # Handle decryption
+                    if "ssh_password_enc" in t_dict:
+                         t_dict["ssh_password"] = self._decrypt(t_dict.pop("ssh_password_enc"))
+                    
+                    try:
+                        tunnels.append(Tunnel.from_dict(t_dict))
+                    except Exception as e:
+                        print(f"Skipping invalid tunnel: {e}")
+                
+                return tunnels
         except (json.JSONDecodeError, KeyError, ValueError) as e:
             print(f"Error loading tunnels: {e}")
             return []
@@ -34,9 +84,17 @@ class StorageService:
     def save_tunnels(self, tunnels: List[Tunnel]) -> bool:
         """Save all tunnel configurations to storage"""
         try:
-            data = {"tunnels": [t.to_dict() for t in tunnels]}
+            serialized_tunnels = []
+            for t in tunnels:
+                data = t.to_dict()
+                # Encrypt password
+                if data.get("ssh_password"):
+                    data["ssh_password_enc"] = self._encrypt(data.pop("ssh_password"))
+                serialized_tunnels.append(data)
+
+            data_wrapper = {"tunnels": serialized_tunnels}
             with open(self.storage_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+                json.dump(data_wrapper, f, indent=2)
             return True
         except IOError as e:
             print(f"Error saving tunnels: {e}")

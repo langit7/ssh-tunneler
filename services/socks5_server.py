@@ -88,16 +88,15 @@ class Socks5Server:
             version = header[0]
 
             # Check for HTTP traffic (GET, POST, CONNECT, HEAD, etc.)
-            # 'C' = 67 (CONNECT)
-            if version == 67: 
-                 # Likely HTTP CONNECT
-                 self._handle_http_connect(client_socket, header)
-                 return
-            
-            # Other HTTP methods (GET, POST, etc) - Basic warning for now
-            if version in [71, 80, 72, 79, 68]:
-                 self.logger.warning(f"Received HTTP method (byte {version}). Only HTTP CONNECT is currently auto-supported.")
-                 self.logger.info(f"Please use HTTPS or SOCKS5.")
+            # Common HTTP methods first bytes:
+            # G (71), P (80), C (67), H (72), O (79), D (68)
+            if version in [67, 71, 80, 72, 79, 68]: 
+                 # C = 67 (CONNECT)
+                 if version == 67:
+                     self._handle_http_connect(client_socket, header)
+                 else:
+                     # Handle other HTTP methods (GET, POST, etc.)
+                     self._handle_standard_http(client_socket, header)
                  return
 
             if version != SOCKS_VERSION:
@@ -266,6 +265,115 @@ class Socks5Server:
                 self.logger.error(f"[HTTP-PROXY] Tunnel failed: {e}")
                 client_socket.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
                 
+            except Exception as e:
+                self.logger.error(f"[HTTP-PROXY] Tunnel failed: {e}")
+                client_socket.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+                
+        except Exception as e:
+            self.logger.error(f"[HTTP-PROXY] Error: {e}")
+
+    def _handle_standard_http(self, client_socket: socket.socket, initial_bytes: bytes):
+        """Handle standard HTTP requests (GET, POST, etc.) acting as a proxy"""
+        try:
+            buffer = initial_bytes
+            while b'\r\n' not in buffer:
+                chunk = client_socket.recv(1024)
+                if not chunk: return
+                buffer += chunk
+                if len(buffer) > 8192: return
+
+            headers_end = buffer.find(b'\r\n\r\n')
+            if headers_end == -1:
+                while b'\r\n\r\n' not in buffer:
+                     chunk = client_socket.recv(1024)
+                     if not chunk: break
+                     buffer += chunk
+                     if len(buffer) > 16384: break
+                headers_end = buffer.find(b'\r\n\r\n')
+            
+            if headers_end == -1: return
+            
+            # Extract request line
+            lines = buffer[:headers_end].split(b'\r\n')
+            request_line = lines[0].decode('utf-8', errors='ignore')
+            parts = request_line.split()
+            
+            if len(parts) < 3: return # Method URI Version
+            
+            method, uri, version = parts[0], parts[1], parts[2]
+            
+            # Parse URI to find host/port
+            # Expected format: http://host:port/path or http://host/path
+            if not uri.lower().startswith('http://'):
+                # Might be already relative if transparent intercept? But SOCKS/HTTP proxy expects absolute.
+                # If relative, we can't determine host unless we look at Host header.
+                # Let's check Host header if URI is relative
+                host = None
+                port = 80
+                for line in lines[1:]:
+                    if line.lower().startswith(b'host:'):
+                         h = line.split(b':', 1)[1].strip().decode('utf-8')
+                         if ':' in h:
+                             host, p = h.split(':')
+                             port = int(p)
+                         else:
+                             host = h
+                         break
+                
+                if not host:
+                    self.logger.warning(f"[HTTP-PROXY] Invalid proxy URI and no Host header: {uri}")
+                    return
+                
+                # URI is already path
+                path_part = uri
+            else:
+                url_parts = uri[7:].split('/', 1) # Strip http://
+                host_part = url_parts[0]
+                path_part = '/' + url_parts[1] if len(url_parts) > 1 else '/'
+                
+                if ':' in host_part:
+                    host, port_str = host_part.split(':')
+                    port = int(port_str)
+                else:
+                    host = host_part
+                    port = 80
+                
+            self.logger.info(f"[HTTP-PROXY] HTTP {method} to {host}:{port}")
+
+            # Establish SSH Tunnel
+            try:
+                if self.transport is None or not self.transport.is_active():
+                    raise Exception("SSH transport not available")
+
+                channel = self.transport.open_channel(
+                    "direct-tcpip",
+                    (host, port),
+                    client_socket.getpeername()
+                )
+
+                if channel is None:
+                    raise Exception("Failed to open SSH channel")
+
+                # REWRITE REQUEST
+                # Standard proxy expects us to forward the request "as is" if it's a transparent proxy, 
+                # but if acting as HTTP proxy, we usually strip the absolute URI.
+                # We will rewrite the request line to use the relative path.
+                
+                new_request_line = f"{method} {path_part} {version}".encode('utf-8')
+                
+                # Reconstruct headers
+                # We retain headers, maybe including Host.
+                new_data = new_request_line + b'\r\n' + b'\r\n'.join(lines[1:]) + b'\r\n\r\n' + buffer[headers_end+4:]
+                
+                channel.send(new_data)
+
+                # Forward rest
+                self._forward_data(client_socket, channel)
+
+            except Exception as e:
+                self.logger.error(f"[HTTP-PROXY] Tunnel failed: {e}")
+                client_socket.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+
         except Exception as e:
             self.logger.error(f"[HTTP-PROXY] Error: {e}")
 
