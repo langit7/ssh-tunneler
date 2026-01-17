@@ -1,0 +1,5 @@
+# Pin compatible versions to fix paramiko.DSSKey issue
+customtkinter==5.2.2
+packaging
+paramiko==3.3.1
+sshtunnel==0.4.0

@@ -1,0 +1,6 @@
+gui-design/
+venv/
+__pycache__/
+.env
+.venv
+tunnels.json
