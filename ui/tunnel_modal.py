@@ -20,11 +20,13 @@ class TunnelDialog(ctk.CTkToplevel):
         
         # Make modal
         self.transient(master)
-        self.grab_set()
         
         self._init_ui()
         if tunnel:
             self._load_tunnel_data(tunnel)
+
+        # Wait for visibility before grabbing focus to avoid TclError
+        self.after(200, self.grab_set)
 
     def _init_ui(self):
         self.grid_columnconfigure(0, weight=1)
