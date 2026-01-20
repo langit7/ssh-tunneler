@@ -59,6 +59,16 @@ class SSHManager:
             **auth_kwargs,
         }
 
+        # Keep-alive settings
+        if tunnel.keepalive_enabled:
+            base_kwargs["set_keepalive"] = tunnel.keepalive_interval
+
+        # Proxy settings - create proxy socket if enabled
+        if tunnel.proxy_enabled and tunnel.proxy_host and tunnel.proxy_port:
+            proxy_sock = self._create_proxy_socket(tunnel)
+            if proxy_sock:
+                base_kwargs["ssh_proxy"] = proxy_sock
+
         if tunnel.tunnel_type == TunnelType.LOCAL:
             # Local port forwarding: local_port -> remote_host:remote_port
             return SSHTunnelForwarder(
@@ -76,6 +86,71 @@ class SSHManager:
         else:
             # Dynamic (SOCKS) forwarding
             return Socks5Server(tunnel, self.status_callback)
+
+    def _create_proxy_socket(self, tunnel: Tunnel):
+        """Create a socket connected through proxy for SSH connection"""
+        import socket
+        from models.tunnel import ProxyType
+        
+        try:
+            if tunnel.proxy_type == ProxyType.SOCKS5:
+                # Use PySocks for SOCKS5 proxy
+                try:
+                    import socks
+                except ImportError:
+                    logging.error("PySocks not installed. Run: pip install pysocks")
+                    return None
+                
+                proxy_sock = socks.socksocket(socket.AF_INET, socket.SOCK_STREAM)
+                proxy_sock.set_proxy(
+                    proxy_type=socks.SOCKS5,
+                    addr=tunnel.proxy_host,
+                    port=tunnel.proxy_port,
+                    username=tunnel.proxy_user if tunnel.proxy_user else None,
+                    password=tunnel.proxy_password if tunnel.proxy_password else None,
+                )
+                proxy_sock.connect((tunnel.ssh_host, tunnel.ssh_port))
+                return proxy_sock
+            
+            elif tunnel.proxy_type == ProxyType.HTTP:
+                # HTTP CONNECT proxy
+                proxy_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                proxy_sock.connect((tunnel.proxy_host, tunnel.proxy_port))
+                
+                # Send CONNECT request
+                connect_header = f"CONNECT {tunnel.ssh_host}:{tunnel.ssh_port} HTTP/1.1\r\n"
+                connect_header += f"Host: {tunnel.ssh_host}:{tunnel.ssh_port}\r\n"
+                
+                if tunnel.proxy_user and tunnel.proxy_password:
+                    import base64
+                    credentials = base64.b64encode(
+                        f"{tunnel.proxy_user}:{tunnel.proxy_password}".encode()
+                    ).decode()
+                    connect_header += f"Proxy-Authorization: Basic {credentials}\r\n"
+                
+                connect_header += "\r\n"
+                proxy_sock.sendall(connect_header.encode())
+                
+                # Read response
+                response = b""
+                while b"\r\n\r\n" not in response:
+                    chunk = proxy_sock.recv(4096)
+                    if not chunk:
+                        raise Exception("Proxy connection closed")
+                    response += chunk
+                
+                # Check for 200 OK
+                status_line = response.split(b"\r\n")[0].decode()
+                if "200" not in status_line:
+                    raise Exception(f"Proxy error: {status_line}")
+                
+                return proxy_sock
+            
+        except Exception as e:
+            logging.error(f"Failed to create proxy connection: {e}")
+            return None
+        
+        return None
 
     def _tunnel_worker(self, tunnel: Tunnel, stop_event: threading.Event):
         """Background worker thread for managing tunnel connection"""

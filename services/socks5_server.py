@@ -65,9 +65,21 @@ class Socks5Server:
             else:
                 connect_kwargs["key_filename"] = self.tunnel.ssh_key_path
 
+            # Create proxy socket if proxy is enabled
+            if self.tunnel.proxy_enabled and self.tunnel.proxy_host and self.tunnel.proxy_port:
+                proxy_sock = self._create_proxy_socket()
+                if proxy_sock:
+                    connect_kwargs["sock"] = proxy_sock
+
             self.logger.info(f"Connecting to SSH server {self.tunnel.ssh_host}:{self.tunnel.ssh_port}...")
             self.ssh_client.connect(**connect_kwargs)
             self.transport = self.ssh_client.get_transport()
+            
+            # Configure keep-alive
+            if self.tunnel.keepalive_enabled and self.transport:
+                self.transport.set_keepalive(self.tunnel.keepalive_interval)
+                self.logger.info(f"Keep-alive enabled with interval {self.tunnel.keepalive_interval}s")
+            
             self.logger.info(f"SSH connection established")
             return True
 
@@ -79,6 +91,73 @@ class Socks5Server:
             self.logger.error(f"SSH connection failed: {e}")
             self._notify_status(TunnelStatus.ERROR, str(e))
             return False
+
+    def _create_proxy_socket(self):
+        """Create a socket connected through proxy for SSH connection"""
+        import socket as sock_module
+        from models.tunnel import ProxyType
+        
+        try:
+            if self.tunnel.proxy_type == ProxyType.SOCKS5:
+                # Use PySocks for SOCKS5 proxy
+                try:
+                    import socks
+                except ImportError:
+                    self.logger.error("PySocks not installed. Run: pip install pysocks")
+                    return None
+                
+                proxy_sock = socks.socksocket(sock_module.AF_INET, sock_module.SOCK_STREAM)
+                proxy_sock.set_proxy(
+                    proxy_type=socks.SOCKS5,
+                    addr=self.tunnel.proxy_host,
+                    port=self.tunnel.proxy_port,
+                    username=self.tunnel.proxy_user if self.tunnel.proxy_user else None,
+                    password=self.tunnel.proxy_password if self.tunnel.proxy_password else None,
+                )
+                proxy_sock.connect((self.tunnel.ssh_host, self.tunnel.ssh_port))
+                self.logger.info(f"Connected through SOCKS5 proxy {self.tunnel.proxy_host}:{self.tunnel.proxy_port}")
+                return proxy_sock
+            
+            elif self.tunnel.proxy_type == ProxyType.HTTP:
+                # HTTP CONNECT proxy
+                proxy_sock = sock_module.socket(sock_module.AF_INET, sock_module.SOCK_STREAM)
+                proxy_sock.connect((self.tunnel.proxy_host, self.tunnel.proxy_port))
+                
+                # Send CONNECT request
+                connect_header = f"CONNECT {self.tunnel.ssh_host}:{self.tunnel.ssh_port} HTTP/1.1\r\n"
+                connect_header += f"Host: {self.tunnel.ssh_host}:{self.tunnel.ssh_port}\r\n"
+                
+                if self.tunnel.proxy_user and self.tunnel.proxy_password:
+                    import base64
+                    credentials = base64.b64encode(
+                        f"{self.tunnel.proxy_user}:{self.tunnel.proxy_password}".encode()
+                    ).decode()
+                    connect_header += f"Proxy-Authorization: Basic {credentials}\r\n"
+                
+                connect_header += "\r\n"
+                proxy_sock.sendall(connect_header.encode())
+                
+                # Read response
+                response = b""
+                while b"\r\n\r\n" not in response:
+                    chunk = proxy_sock.recv(4096)
+                    if not chunk:
+                        raise Exception("Proxy connection closed")
+                    response += chunk
+                
+                # Check for 200 OK
+                status_line = response.split(b"\r\n")[0].decode()
+                if "200" not in status_line:
+                    raise Exception(f"Proxy error: {status_line}")
+                
+                self.logger.info(f"Connected through HTTP proxy {self.tunnel.proxy_host}:{self.tunnel.proxy_port}")
+                return proxy_sock
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create proxy connection: {e}")
+            return None
+        
+        return None
 
     def _handle_client(self, client_socket: socket.socket, client_addr: tuple):
         """Handle a single SOCKS5 client connection"""

@@ -4,3 +4,4 @@ packaging
 paramiko==3.3.1
 sshtunnel==0.4.0
 cryptography
+pysocks  # For SOCKS5 proxy support

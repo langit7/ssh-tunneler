@@ -67,9 +67,12 @@ class StorageService:
                 data = json.load(f)
                 tunnels = []
                 for t_dict in data.get("tunnels", []):
-                    # Handle decryption
+                    # Handle decryption of SSH password
                     if "ssh_password_enc" in t_dict:
                          t_dict["ssh_password"] = self._decrypt(t_dict.pop("ssh_password_enc"))
+                    # Handle decryption of proxy password
+                    if "proxy_password_enc" in t_dict:
+                         t_dict["proxy_password"] = self._decrypt(t_dict.pop("proxy_password_enc"))
                     
                     try:
                         tunnels.append(Tunnel.from_dict(t_dict))
@@ -87,9 +90,16 @@ class StorageService:
             serialized_tunnels = []
             for t in tunnels:
                 data = t.to_dict()
-                # Encrypt password
+                # Encrypt SSH password
                 if data.get("ssh_password"):
                     data["ssh_password_enc"] = self._encrypt(data.pop("ssh_password"))
+                else:
+                    data.pop("ssh_password", None)
+                # Encrypt proxy password
+                if data.get("proxy_password"):
+                    data["proxy_password_enc"] = self._encrypt(data.pop("proxy_password"))
+                else:
+                    data.pop("proxy_password", None)
                 serialized_tunnels.append(data)
 
             data_wrapper = {"tunnels": serialized_tunnels}

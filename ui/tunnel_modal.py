@@ -1,6 +1,6 @@
 import customtkinter as ctk
 from typing import Optional, Callable
-from models.tunnel import Tunnel, TunnelType, AuthType, TunnelStatus
+from models.tunnel import Tunnel, TunnelType, AuthType, TunnelStatus, ProxyType
 import uuid
 
 class TunnelDialog(ctk.CTkToplevel):
@@ -116,6 +116,19 @@ class TunnelDialog(ctk.CTkToplevel):
         # Auto Reconnect
         self.auto_reconnect_var = ctk.BooleanVar(value=True)
         self.auto_reconnect_switch = ctk.CTkSwitch(self.dynamic_frame, text="Auto Reconnect", variable=self.auto_reconnect_var)
+        
+        # Keep-Alive Settings
+        self.keepalive_enabled_var = ctk.BooleanVar(value=True)
+        self.keepalive_interval_var = ctk.StringVar(value="30")
+        self.keepalive_count_max_var = ctk.StringVar(value="3")
+        
+        # Proxy Settings
+        self.proxy_enabled_var = ctk.BooleanVar(value=False)
+        self.proxy_type_var = ctk.StringVar(value=ProxyType.SOCKS5.value)
+        self.proxy_host_var = ctk.StringVar(value="")
+        self.proxy_port_var = ctk.StringVar(value="")
+        self.proxy_user_var = ctk.StringVar(value="")
+        self.proxy_password_var = ctk.StringVar(value="")
 
     def _render_dynamic_fields(self, tunnel_type: str):
         """Re-pack widgets based on tunnel type. Recreates widgets to handle parent changes."""
@@ -336,6 +349,94 @@ class TunnelDialog(ctk.CTkToplevel):
         # Add Auto Reconnect
         self.auto_reconnect_switch = ctk.CTkSwitch(self.dynamic_frame, text="Auto Reconnect", variable=self.auto_reconnect_var)
         add_row("", self.auto_reconnect_switch)
+        
+        # --- Keep-Alive Section ---
+        add_divider()
+        add_header("Keep-Alive Settings")
+        
+        self.keepalive_switch = ctk.CTkSwitch(
+            self.dynamic_frame, 
+            text="Enable Keep-Alive", 
+            variable=self.keepalive_enabled_var,
+            command=self._on_keepalive_toggle
+        )
+        add_row("", self.keepalive_switch)
+        
+        # Keep-alive interval/count (only visible when enabled)
+        self.keepalive_frame = ctk.CTkFrame(self.dynamic_frame, fg_color="transparent")
+        self.keepalive_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(5,0))
+        self.keepalive_frame.grid_columnconfigure(0, weight=1)
+        self.keepalive_frame.grid_columnconfigure(1, weight=1)
+        
+        # Interval
+        interval_frame = ctk.CTkFrame(self.keepalive_frame, fg_color="transparent")
+        interval_frame.grid(row=0, column=0, sticky="ew", padx=(0,5))
+        ctk.CTkLabel(interval_frame, text="Interval (sec)", anchor="w").pack(fill="x")
+        self.keepalive_interval_entry = ctk.CTkEntry(interval_frame, textvariable=self.keepalive_interval_var)
+        self.keepalive_interval_entry.pack(fill="x", pady=(2,0))
+        
+        # Count max
+        count_frame = ctk.CTkFrame(self.keepalive_frame, fg_color="transparent")
+        count_frame.grid(row=0, column=1, sticky="ew")
+        ctk.CTkLabel(count_frame, text="Max Count", anchor="w").pack(fill="x")
+        self.keepalive_count_entry = ctk.CTkEntry(count_frame, textvariable=self.keepalive_count_max_var)
+        self.keepalive_count_entry.pack(fill="x", pady=(2,0))
+        row += 1
+        
+        # Toggle visibility
+        self._update_keepalive_visibility()
+        
+        # --- Proxy Section ---
+        add_divider()
+        add_header("Proxy Settings")
+        
+        self.proxy_switch = ctk.CTkSwitch(
+            self.dynamic_frame, 
+            text="Use Proxy", 
+            variable=self.proxy_enabled_var,
+            command=self._on_proxy_toggle
+        )
+        add_row("", self.proxy_switch)
+        
+        # Proxy detail frame
+        self.proxy_frame = ctk.CTkFrame(self.dynamic_frame, fg_color="transparent")
+        self.proxy_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(5,0))
+        self.proxy_frame.grid_columnconfigure(1, weight=1)
+        row += 1
+        
+        # Proxy Type
+        ctk.CTkLabel(self.proxy_frame, text="Type", anchor="w").grid(row=0, column=0, sticky="w", pady=(5,0))
+        self.proxy_type_menu = ctk.CTkOptionMenu(
+            self.proxy_frame,
+            variable=self.proxy_type_var,
+            values=[t.value for t in ProxyType]
+        )
+        self.proxy_type_menu.grid(row=0, column=1, sticky="ew", padx=(10,0), pady=(5,0))
+        
+        # Proxy Host:Port
+        ctk.CTkLabel(self.proxy_frame, text="Host : Port", anchor="w").grid(row=1, column=0, sticky="w", pady=(5,0))
+        host_port_frame = ctk.CTkFrame(self.proxy_frame, fg_color="transparent")
+        host_port_frame.grid(row=1, column=1, sticky="ew", padx=(10,0), pady=(5,0))
+        host_port_frame.grid_columnconfigure(0, weight=3)
+        host_port_frame.grid_columnconfigure(1, weight=1)
+        
+        self.proxy_host_entry = ctk.CTkEntry(host_port_frame, textvariable=self.proxy_host_var, placeholder_text="proxy.example.com")
+        self.proxy_host_entry.grid(row=0, column=0, sticky="ew", padx=(0,5))
+        self.proxy_port_entry = ctk.CTkEntry(host_port_frame, textvariable=self.proxy_port_var, placeholder_text="1080")
+        self.proxy_port_entry.grid(row=0, column=1, sticky="ew")
+        
+        # Proxy Username (optional)
+        ctk.CTkLabel(self.proxy_frame, text="Username", anchor="w").grid(row=2, column=0, sticky="w", pady=(5,0))
+        self.proxy_user_entry = ctk.CTkEntry(self.proxy_frame, textvariable=self.proxy_user_var, placeholder_text="(optional)")
+        self.proxy_user_entry.grid(row=2, column=1, sticky="ew", padx=(10,0), pady=(5,0))
+        
+        # Proxy Password (optional)
+        ctk.CTkLabel(self.proxy_frame, text="Password", anchor="w").grid(row=3, column=0, sticky="w", pady=(5,0))
+        self.proxy_password_entry = ctk.CTkEntry(self.proxy_frame, textvariable=self.proxy_password_var, placeholder_text="(optional)", show="*")
+        self.proxy_password_entry.grid(row=3, column=1, sticky="ew", padx=(10,0), pady=(5,0))
+        
+        # Toggle visibility
+        self._update_proxy_visibility()
 
     def _on_type_change(self, choice):
         self._render_dynamic_fields(choice)
@@ -349,6 +450,30 @@ class TunnelDialog(ctk.CTkToplevel):
              self.secret_label.configure(text="Password") if hasattr(self, 'secret_label') else None
         else:
              self.secret_label.configure(text="Private Key Path") if hasattr(self, 'secret_label') else None
+
+    def _on_keepalive_toggle(self):
+        """Toggle keep-alive settings visibility"""
+        self._update_keepalive_visibility()
+    
+    def _update_keepalive_visibility(self):
+        """Update keep-alive section visibility based on toggle"""
+        if hasattr(self, 'keepalive_frame'):
+            if self.keepalive_enabled_var.get():
+                self.keepalive_frame.grid()
+            else:
+                self.keepalive_frame.grid_remove()
+    
+    def _on_proxy_toggle(self):
+        """Toggle proxy settings visibility"""
+        self._update_proxy_visibility()
+    
+    def _update_proxy_visibility(self):
+        """Update proxy section visibility based on toggle"""
+        if hasattr(self, 'proxy_frame'):
+            if self.proxy_enabled_var.get():
+                self.proxy_frame.grid()
+            else:
+                self.proxy_frame.grid_remove()
 
     def _pick_key_file(self):
         file_path = ctk.filedialog.askopenfilename(filetypes=[("Private Keys", "*"), ("All Files", "*.*")])
@@ -379,6 +504,19 @@ class TunnelDialog(ctk.CTkToplevel):
             
         self.auto_reconnect_var.set(tunnel.auto_reconnect)
         
+        # Keep-alive settings
+        self.keepalive_enabled_var.set(tunnel.keepalive_enabled)
+        self.keepalive_interval_var.set(str(tunnel.keepalive_interval))
+        self.keepalive_count_max_var.set(str(tunnel.keepalive_count_max))
+        
+        # Proxy settings
+        self.proxy_enabled_var.set(tunnel.proxy_enabled)
+        self.proxy_type_var.set(tunnel.proxy_type.value)
+        self.proxy_host_var.set(tunnel.proxy_host or "")
+        self.proxy_port_var.set(str(tunnel.proxy_port) if tunnel.proxy_port else "")
+        self.proxy_user_var.set(tunnel.proxy_user or "")
+        self.proxy_password_var.set(tunnel.proxy_password or "")
+        
         # Trigger layout update
         self._render_dynamic_fields(tunnel.tunnel_type.value)
 
@@ -389,6 +527,13 @@ class TunnelDialog(ctk.CTkToplevel):
                 l_port = int(self.local_port_entry.get())
                 s_port = int(self.ssh_port_entry.get())
                 r_port = int(self.remote_port_entry.get()) if self.remote_port_entry.get() else 0
+                
+                # Keep-alive values
+                ka_interval = int(self.keepalive_interval_var.get()) if self.keepalive_interval_var.get() else 30
+                ka_count = int(self.keepalive_count_max_var.get()) if self.keepalive_count_max_var.get() else 3
+                
+                # Proxy port
+                proxy_port = int(self.proxy_port_var.get()) if self.proxy_port_var.get() else 0
             except ValueError:
                 self.focus()
                 return
@@ -405,12 +550,19 @@ class TunnelDialog(ctk.CTkToplevel):
                 ssh_user=self.ssh_user_entry.get(),
                 auth_type=AuthType(self.auth_type_var.get()),
                 ssh_password=self.secret_entry.get() if self.auth_type_var.get() == AuthType.PASSWORD.value else None,
-                # FIXED: Use getattr or direct string check if Enum doesn't have KEY_FILE (it likely has KEY based on previous error)
-                # Checking models/tunnel.py would be best, but assuming 'key_file' value or similar.
-                # If error was "no attribute KEY_FILE", it means AuthType.KEY_FILE doesn't exist.
-                # I should check what AuthType actually has.
                 ssh_key_path=self.secret_entry.get() if self.auth_type_var.get() != AuthType.PASSWORD.value else None,
-                auto_reconnect=self.auto_reconnect_var.get()
+                auto_reconnect=self.auto_reconnect_var.get(),
+                # Keep-alive settings
+                keepalive_enabled=self.keepalive_enabled_var.get(),
+                keepalive_interval=ka_interval,
+                keepalive_count_max=ka_count,
+                # Proxy settings
+                proxy_enabled=self.proxy_enabled_var.get(),
+                proxy_type=ProxyType(self.proxy_type_var.get()),
+                proxy_host=self.proxy_host_var.get(),
+                proxy_port=proxy_port,
+                proxy_user=self.proxy_user_var.get(),
+                proxy_password=self.proxy_password_var.get(),
             )
             
             self.on_save(new_tunnel)
