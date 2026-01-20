@@ -226,6 +226,19 @@ class Socks5Server:
 
             self.logger.info(f"Forwarding connection to {dest_addr}:{dest_port}")
 
+            # Resolve hostname locally before forwarding to SSH server
+            # This ensures /etc/hosts entries are respected
+            resolved_addr = dest_addr
+            if atyp == ATYP_DOMAIN:
+                try:
+                    resolved_addr = socket.gethostbyname(dest_addr)
+                    if resolved_addr != dest_addr:
+                        self.logger.info(f"Resolved {dest_addr} -> {resolved_addr}")
+                except socket.gaierror:
+                    # If local resolution fails, pass the original hostname
+                    # The remote SSH server may be able to resolve it
+                    self.logger.debug(f"Local resolution failed for {dest_addr}, forwarding as-is")
+
             # Open SSH channel to destination
             try:
                 if self.transport is None or not self.transport.is_active():
@@ -233,7 +246,7 @@ class Socks5Server:
 
                 channel = self.transport.open_channel(
                     "direct-tcpip",
-                    (dest_addr, dest_port),
+                    (resolved_addr, dest_port),
                     client_addr
                 )
 
