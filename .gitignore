@@ -4,3 +4,7 @@ __pycache__/
 .env
 .venv
 tunnels.json
+.secret.key
+build/
+dist/
+ssh-tunneler.spec

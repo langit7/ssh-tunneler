@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 from cryptography.fernet import Fernet
 from models.tunnel import Tunnel
+import sys
 
 class StorageService:
     """Handles persistence of tunnel configurations to JSON file with encryption"""
@@ -13,7 +14,14 @@ class StorageService:
             self.storage_path = Path(storage_path)
         else:
             # Default to tunnels.json in user's app data or current directory
-            self.storage_path = Path(__file__).parent.parent / "tunnels.json"
+            if getattr(sys, 'frozen', False):
+                # If running as compiled binary, use the directory of the executable
+                base_dir = Path(sys.executable).parent
+            else:
+                # If running from source, use the project root
+                base_dir = Path(__file__).parent.parent
+            
+            self.storage_path = base_dir / "tunnels.json"
         
         self.key_path = self.storage_path.parent / ".secret.key"
         self._load_or_generate_key()
